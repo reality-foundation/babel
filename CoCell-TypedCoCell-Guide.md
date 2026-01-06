@@ -7,6 +7,10 @@ A comprehensive guide to the CoCell abstraction layer for building distributed c
 - [Overview](#overview)
 - [CoCell (Untyped)](#cocell-untyped)
 - [TypedCoCell (Typed)](#typedcocell-typed)
+- [TypedCoCellWithCell (Bridge Trait)](#typedcocellwithcell-bridge-trait)
+- [SafeStreamCell](#safestreamcell)
+- [SafeBlockConsensusCell](#safeblockconsensuscell)
+- [ZK-WASM Custom Routes Integration](#zk-wasm-custom-routes-integration)
 - [Arrow Implementations](#arrow-implementations)
 - [Pipeline Composition](#pipeline-composition)
 - [Configuration](#configuration)
@@ -171,6 +175,339 @@ TypedCoCell.eval[B, C]: TypedCoCell[(TypedCoCell[B, C], B), C]
 - Complex multi-stage pipelines
 - Systems requiring compile-time verification
 - Integration with typed state channel logic
+
+---
+
+## TypedCoCellWithCell (Bridge Trait)
+
+The `TypedCoCellWithCell` trait bridges the high-level TypedCoCell abstraction with the low-level kernel Cell infrastructure, enabling type-safe cells to produce proper kernel cells with termination proofs.
+
+### Core Trait
+
+```scala
+trait TypedCoCellWithCell[In <: Ω, Out <: Ω] extends TypedCoCell[In, Out] {
+  def cell: Cell[IO, StackF, In, Out, Either[CellError, Out]]
+
+  // Bridge to kernel Cell infrastructure
+  def toCell: Cell[IO, StackF, Ω, Ω, Either[CellError, Ω]] = cell.asInstanceOf[...]
+}
+```
+
+### TypedCoCellWithCellAndProof
+
+Extends the bridge trait with termination proofs for verified halt-free computation:
+
+```scala
+trait TypedCoCellWithCellAndProof[In <: Ω, Out <: Ω] extends TypedCoCellWithCell[In, Out] {
+  def terminationProof(input: In): CellTerminationProof
+}
+
+case class CellTerminationProof(
+  cellName: String,
+  measureBefore: Int,
+  measureAfter: Int,
+  isValid: Boolean
+) {
+  def isStrictlyDecreasing: Boolean = measureAfter < measureBefore
+}
+```
+
+### ProcessingState Pattern
+
+The `ProcessingState` sealed trait provides a WellFounded measure that strictly decreases:
+
+```scala
+sealed trait ProcessingState[+A] extends Ω {
+  def depth: Int  // Measure for WellFounded termination
+}
+
+case class Processing[A](value: A) extends ProcessingState[A] {
+  def depth: Int = 1
+}
+
+case class Completed[A](result: Either[CellError, A]) extends ProcessingState[A] {
+  def depth: Int = 0
+}
+```
+
+### WellFounded Instance
+
+```scala
+given wellFoundedProcessingState[A]: WellFounded[ProcessingState[A]] =
+  WellFounded.fromMeasure[ProcessingState[A], Int](_.depth)
+```
+
+### When to Use TypedCoCellWithCell
+
+- When you need kernel Cell integration with type safety
+- When termination proofs are required for zkSNARK generation
+- When building safe hylo pipelines with verified termination
+- For state channels requiring both types and proofs
+
+---
+
+## SafeStreamCell
+
+`SafeStreamCell` is a factory for creating type-safe cells that use the safe hylo pattern (safeCoalgebra → transform → safeAlgebra) with WellFounded termination proofs.
+
+### Core Pattern
+
+```scala
+object SafeStreamCell {
+  // Coalgebra: unfold input into ProcessingState
+  def safeCoalgebra[F[_]: Async, A](input: A): F[ProcessingState[A]] =
+    Processing(input).pure[F]
+
+  // Algebra: fold ProcessingState into result
+  def safeAlgebra[F[_]: Async, A](state: ProcessingState[A]): F[Either[CellError, A]] =
+    state match {
+      case Processing(value) => value.asRight[CellError].pure[F]
+      case Completed(result) => result.pure[F]
+    }
+
+  // Create safe cell from pure transformation
+  def apply[In <: Ω, Out <: Ω](
+    cellName: String,
+    transform: In => Out
+  ): TypedCoCellWithCellAndProof[In, Out]
+}
+```
+
+### Creating Safe Cells
+
+```scala
+// Simple safe cell
+val safeCalibrate: TypedCoCellWithCellAndProof[RawSensorReading, CalibratedReading] =
+  SafeStreamCell("calibrate", (raw: RawSensorReading) =>
+    CalibratedReading(
+      deviceId = raw.deviceId,
+      value = raw.value * 1.05,
+      unit = "celsius",
+      calibrationFactor = 1.05
+    )
+  )
+
+// Safe cell for pair inputs (products)
+val safeMerge: TypedCoCellWithCellAndProof[ΩPair[ValidatedReading, ReadingStats], Alert] =
+  SafeStreamCell.forPair("merge", (v: ValidatedReading, s: ReadingStats) =>
+    Alert("INFO", s"Valid=${v.isValid}, Sum=${s.sum}", System.currentTimeMillis())
+  )
+```
+
+### ΩPair and ΩDouble Wrappers
+
+For Cell infrastructure compatibility (tuples and primitives don't extend Ω):
+
+```scala
+case class ΩPair[A, B](first: A, second: B) extends Ω
+case class ΩDouble(value: Double) extends Ω
+```
+
+### Termination Proofs
+
+```scala
+val testInput = RawSensorReading("sensor-001", 85.5, System.currentTimeMillis())
+val proof = safeCalibrate.terminationProof(testInput)
+// CellTerminationProof("calibrate", 1, 0, valid=true)
+
+assert(proof.isStrictlyDecreasing)  // Measure: 1 → 0
+```
+
+---
+
+## SafeBlockConsensusCell
+
+`SafeBlockConsensusCell` extends the safe hylo pattern to block consensus operations, ensuring that state channel operations have verified termination.
+
+### Multi-Stage Processing State
+
+```scala
+sealed trait ZKWasmProcessingState extends Ω {
+  def depth: Int
+}
+
+case class WasmInput(input: L0OutputState) extends ZKWasmProcessingState {
+  def depth: Int = 2  // Initial state
+}
+
+case class WasmExecuted(
+  input: L0OutputState,
+  result: Int,
+  proofPath: Option[Path]
+) extends ZKWasmProcessingState {
+  def depth: Int = 1  // After WASM execution
+}
+
+case class WasmCompleted(
+  result: Either[CellError, StateChannelState]
+) extends ZKWasmProcessingState {
+  def depth: Int = 0  // Terminal state
+}
+```
+
+### Safe Hylo Flow
+
+```
+WasmInput (depth=2)
+    ↓ safeCoalgebra
+ProcessingState[WasmInput]
+    ↓ executeWasm + generateProof
+WasmExecuted (depth=1)
+    ↓ transform
+WasmCompleted (depth=0)
+    ↓ safeAlgebra
+Either[CellError, StateChannelState]
+```
+
+### Integration with ZK-WASM
+
+```scala
+def executeWasmWithProof[F[_]: Async](
+  input: L0OutputState,
+  functionName: String,
+  params: (Int, Int)
+): F[ZKWasmProcessingState] = {
+  for {
+    // Execute WASM with ZK-STARK proof generation
+    executor <- Async[F].pure(new RealZKWasmExecutor())
+    zkWasmResult <- executor.generateProof(functionName, params._1, params._2)
+    // Return intermediate state with proof
+  } yield WasmExecuted(input, zkWasmResult.result, Some(zkWasmResult.proofPath))
+}
+
+def runSafeHylo[F[_]: Async](input: L0OutputState): F[Either[CellError, StateChannelState]] = {
+  for {
+    initial <- safeCoalgebra[F, L0OutputState](input)
+    executed <- executeWasmWithProof[F](input, "add", (42, 58))
+    completed = WasmCompleted(transformToState(executed))
+    result <- safeAlgebra[F, StateChannelState](completed)
+  } yield result
+}
+```
+
+---
+
+## ZK-WASM Custom Routes Integration
+
+Custom HTTP routes can expose ZK-WASM execution capabilities through the BabelApp framework.
+
+### ZKWasmExecutionRoutes
+
+```scala
+class ZKWasmExecutionRoutes[F[_]: Async](nodeApi: HttpApi[F])
+    extends AdditionalRoutes[F] with Http4sDsl[F] {
+
+  private val executor = new RealZKWasmExecutor()
+
+  // POST /zk-wasm/execute - Execute WASM with ZK proof generation
+  private val executeRoutes: HttpRoutes[F] = HttpRoutes.of[F] {
+    case req @ POST -> Root / "zk-wasm" / "execute" =>
+      for {
+        body <- req.as[Json]
+        function = body.hcursor.downField("function").as[String].getOrElse("add")
+        a = body.hcursor.downField("a").as[Int].getOrElse(0)
+        b = body.hcursor.downField("b").as[Int].getOrElse(0)
+        result <- Async[F].blocking {
+          executor.generateProof(function, a, b)
+        }
+        response <- Ok(Json.obj(
+          "result" -> Json.fromInt(result.result),
+          "proofPath" -> Json.fromString(result.proofPath.toString),
+          "verificationKey" -> Json.fromString(result.verificationKey)
+        ))
+      } yield response
+  }
+
+  // POST /zk-wasm/verify - Verify a ZK proof
+  private val verifyRoutes: HttpRoutes[F] = HttpRoutes.of[F] {
+    case req @ POST -> Root / "zk-wasm" / "verify" =>
+      for {
+        body <- req.as[Json]
+        proofPath = body.hcursor.downField("proofPath").as[String].getOrElse("")
+        a = body.hcursor.downField("a").as[Int].getOrElse(0)
+        b = body.hcursor.downField("b").as[Int].getOrElse(0)
+        expectedResult = body.hcursor.downField("expectedResult").as[Int].getOrElse(0)
+        isValid <- Async[F].blocking {
+          executor.verifyProof(Path.of(proofPath), a, b, expectedResult)
+        }
+        response <- Ok(Json.obj("valid" -> Json.fromBoolean(isValid)))
+      } yield response
+  }
+
+  // GET /zk-wasm/status - Get executor status
+  private val statusRoutes: HttpRoutes[F] = HttpRoutes.of[F] {
+    case GET -> Root / "zk-wasm" / "status" =>
+      Ok(Json.obj(
+        "status" -> Json.fromString("ready"),
+        "supportedFunctions" -> Json.arr(
+          Json.fromString("add"),
+          Json.fromString("multiply"),
+          Json.fromString("subtract"),
+          Json.fromString("sum_of_squares")
+        )
+      ))
+  }
+
+  override val publicRoutes: HttpRoutes[F] = executeRoutes <+> verifyRoutes <+> statusRoutes
+  override val p2pRoutes: HttpRoutes[F] = HttpRoutes.empty[F]
+}
+
+object ZKWasmExecutionRoutes {
+  def make[F[_]: Async]: HttpApi[F] => AdditionalRoutes[F] =
+    (nodeApi: HttpApi[F]) => new ZKWasmExecutionRoutes[F](nodeApi)
+}
+```
+
+### BabelApp Integration
+
+```scala
+val zkWasmStateChannelNode: TypedCoCellNode[L0OutputState, StateChannelState] =
+  BabelApp.l1Node(
+    ZKWasmStateChannelTyped.withConfig(l1Config),
+    l1Config,
+    MkZKWasmExecutorStateChannel,
+    customRoutes = List(ZKWasmExecutionRoutes.make[IO])
+  )
+```
+
+### Testing ZK-WASM Endpoints
+
+```bash
+# Check status
+curl http://localhost:9010/zk-wasm/status
+
+# Execute WASM with ZK proof
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"function": "add", "a": 42, "b": 58}' \
+  http://localhost:9010/zk-wasm/execute
+
+# Verify proof
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"proofPath": "/tmp/zk-wasm/proofs/add_42_58.proof", "a": 42, "b": 58, "expectedResult": 100}' \
+  http://localhost:9010/zk-wasm/verify
+```
+
+### Example Responses
+
+```json
+// GET /zk-wasm/status
+{
+  "status": "ready",
+  "supportedFunctions": ["add", "multiply", "subtract", "sum_of_squares"]
+}
+
+// POST /zk-wasm/execute
+{
+  "result": 100,
+  "proofPath": "/tmp/zk-wasm/proofs/add_42_58.proof",
+  "verificationKey": "vk_abc123..."
+}
+
+// POST /zk-wasm/verify
+{
+  "valid": true
+}
+```
 
 ---
 

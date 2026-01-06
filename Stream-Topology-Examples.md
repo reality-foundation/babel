@@ -14,6 +14,7 @@ A comprehensive guide to TypedCoCell operators and topology patterns for buildin
 - [Combined Topology Patterns](#combined-topology-patterns)
 - [Adjoint Relationships](#adjoint-relationships)
 - [Running the Examples](#running-the-examples)
+- [Safe Hylo Versions](#safe-hylo-versions)
 
 ---
 
@@ -724,17 +725,133 @@ All demonstrations complete!
 
 ---
 
+## Safe Hylo Versions
+
+All topology patterns have safe hylo versions in `CombinedSafeHyloExamples.scala` that use:
+- `SafeStreamCell` with `safeCoalgebra` / `safeAlgebra` pattern
+- `TypedCoCellWithCellAndProof` for termination proofs
+- WellFounded measure that strictly decreases
+
+### SafeStreamCell Pattern
+
+```scala
+object SafeStreamCell {
+  // Coalgebra: unfold input into ProcessingState
+  def safeCoalgebra[F[_]: Async, A](input: A): F[ProcessingState[A]] =
+    Processing(input).pure[F]
+
+  // Algebra: fold ProcessingState into result
+  def safeAlgebra[F[_]: Async, A](state: ProcessingState[A]): F[Either[CellError, A]] =
+    state match {
+      case Processing(value) => value.asRight[CellError].pure[F]
+      case Completed(result) => result.pure[F]
+    }
+
+  // Create safe cell from pure transformation
+  def apply[In <: Ω, Out <: Ω](
+    cellName: String,
+    transform: In => Out
+  ): TypedCoCellWithCellAndProof[In, Out]
+}
+```
+
+### Safe Base Cells
+
+```scala
+val safeCalibrate: TypedCoCellWithCellAndProof[RawSensorReading, CalibratedReading] =
+  SafeStreamCell("calibrate", (raw: RawSensorReading) =>
+    CalibratedReading(
+      deviceId = raw.deviceId,
+      value = raw.value * 1.05,
+      unit = "celsius",
+      calibrationFactor = 1.05
+    )
+  )
+
+val safeValidate: TypedCoCellWithCellAndProof[CalibratedReading, ValidatedReading] =
+  SafeStreamCell("validate", (calibrated: CalibratedReading) => {
+    val quality = if calibrated.value >= -50 && calibrated.value <= 150 then 1.0 else 0.5
+    ValidatedReading(
+      reading = calibrated,
+      qualityScore = quality,
+      isValid = quality > 0.7
+    )
+  })
+```
+
+### Safe Composed Topologies
+
+Composed topologies use TypedCoCell operators (`>>>`, `&&&`, `***`), NOT pipelines wrapped in cells:
+
+```scala
+// Safe Full Pipeline: Raw → ((Validated, Stats), Alert)
+val safeFullPipeline: TypedCoCell[RawSensorReading, ((ValidatedReading, ReadingStats), Alert)] =
+  safeCalibrate >>> ((safeValidate &&& safeComputeStats) &&& safeGenerateAlert)
+
+// Safe Diamond Pattern
+val safeDiamondPattern: TypedCoCell[RawSensorReading, Alert] = {
+  val safeMerge = SafeStreamCell.forPair("merge", (v: ValidatedReading, s: ReadingStats) =>
+    Alert("INFO", s"Valid=${v.isValid}, Sum=${s.sum}", System.currentTimeMillis())
+  )
+  val tupleToΩPair = TypedCoCell.lift("toΩPair") { case (v, s) => ΩPair(v, s) }
+
+  safeCalibrate >>> (safeValidate &&& safeComputeStats) >>> tupleToΩPair >>> safeMerge
+}
+
+// Safe Scatter-Gather Pattern
+val safeScatterGather: TypedCoCell[CalibratedReading, ReadingStats] = {
+  val safePath1 = SafeStreamCell("path1", (c: CalibratedReading) => ΩDouble(c.value * 2))
+  val safePath2 = SafeStreamCell("path2", (c: CalibratedReading) => ΩDouble(c.value + 10))
+  val safeGather = SafeStreamCell.forPair("gather", (v1: ΩDouble, v2: ΩDouble) =>
+    ReadingStats(2, v1.value + v2.value, Math.min(v1.value, v2.value), Math.max(v1.value, v2.value))
+  )
+  val tupleToΩPair = TypedCoCell.lift("toΩPair") { case (d1, d2) => ΩPair(d1, d2) }
+
+  (safePath1 &&& safePath2) >>> tupleToΩPair >>> safeGather
+}
+```
+
+### Termination Proofs
+
+Each safe cell provides termination proofs:
+
+```scala
+val proof = safeCalibrate.terminationProof(testInput)
+// CellTerminationProof(calibrate, 1 → 0, valid=true)
+
+val windowProof = safeWindowedAggregation.terminationProof(ΩPair(testCal, cal2))
+// CellTerminationProof(windowAggregate, 1 → 0, valid=true)
+```
+
+### ΩPair and ΩDouble Wrappers
+
+For Cell infrastructure compatibility (tuples don't extend Ω):
+
+```scala
+case class ΩPair[A, B](first: A, second: B) extends Ω
+case class ΩDouble(value: Double) extends Ω
+```
+
+### Running Safe Hylo Examples
+
+```bash
+sbt "combined/runMain org.reality.combined.examples.topologies.CombinedSafeHyloExamplesRunner"
+```
+
+---
+
 ## File Structure
 
 ```
 modules/combined/src/main/scala/org/reality/combined/examples/topologies/
-├── StreamTopologyTypes.scala      # Domain types and basic cells
-├── DimapExamples.scala            # dimap operator examples
-├── FanOutExamples.scala           # &&& operator examples
-├── ParallelExamples.scala         # *** operator examples
-├── WrapExamples.scala             # TypedCoCell.wrap examples
-├── CombinedExamples.scala         # Combined topology patterns
-└── StreamTopologyExample.scala    # Master runner
+├── StreamTopologyTypes.scala          # Domain types and basic cells
+├── DimapExamples.scala                # dimap operator examples
+├── FanOutExamples.scala               # &&& operator examples
+├── ParallelExamples.scala             # *** operator examples
+├── WrapExamples.scala                 # TypedCoCell.wrap examples
+├── CombinedExamples.scala             # Combined topology patterns
+├── CombinedSafeHyloExamples.scala     # Safe hylo versions with proofs
+└── StreamTopologyExample.scala        # Master runner
 ```
 
 ---
