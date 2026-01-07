@@ -54,9 +54,346 @@ Reality applications are structured in layers:
 
 ### Prerequisites
 
-1. Add the `reality-combined` JAR to your project's `lib/` directory
-2. Configure your `build.sbt` with required dependencies
-3. Choose your approach: Untyped (UntypedBabelApp) or Typed (BabelApp)
+1. Java 17+
+2. SBT 1.9+
+3. Scala 3.7.3
+
+### Building the Reality Combined JAR
+
+The reality-combined module bundles all internal modules (kernel, shared, sdk, dagL1, core, aci, etc.) into a single JAR with sources for IDE navigation.
+
+```bash
+# In the reality project directory
+cd /path/to/reality
+
+# Build both the main JAR and sources JAR
+sbt "combined/package; combined/packageSrc"
+
+# Output files:
+# modules/combined/target/scala-3.7.3/reality-combined_3-VERSION.jar         (classes)
+# modules/combined/target/scala-3.7.3/reality-combined_3-VERSION-sources.jar (sources)
+```
+
+### Project Setup
+
+#### 1. Copy JARs to your project
+
+```bash
+# Create lib directory if needed
+mkdir -p /path/to/your-project/lib
+
+# Copy both JARs
+cp modules/combined/target/scala-3.7.3/reality-combined_3-*.jar /path/to/your-project/lib/
+```
+
+#### 2. Configure project/Dependencies.scala
+
+Create or update `project/Dependencies.scala` with versions matching reality:
+
+```scala
+import sbt._
+
+object Dependencies {
+
+  object V {
+    val scala = "3.7.3"
+
+    // Match reality project versions for compatibility
+    val apacheDerby = "10.15.2.0"
+    val betterFiles = "3.9.2"
+    val bitcoinj = "0.17"
+    val bouncyCastle = "1.82"
+    val breeze = "2.1.0"
+    val cats = "2.13.0"
+    val catsEffect = "3.6.3"
+    val catsRetry = "4.0.0"
+    val circe = "0.14.15"
+    val ciris = "3.11.0"
+    val comcast = "3.7.0"
+    val decline = "2.5.0"
+    val doobie = "1.0.0-RC10"
+    val droste = "0.10.0"
+    val flyway = "11.14.0"
+    val fs2 = "3.12.2"
+    val fs2Data = "1.12.0"
+    val http4s = "0.23.32"
+    val http4sJwtAuth = "2.0.11"
+    val iron = "3.2.0"
+    val izumi = "3.0.6"
+    val javaIpfsHttpClient = "v1.4.1"
+    val jawnVersion = "1.6.0"
+    val jawnFs2Version = "2.4.0"
+    val kittens = "3.5.0"
+    val log4cats = "2.7.1"
+    val logback = "1.5.19"
+    val logstashLogbackEncoder = "8.1"
+    val mapref = "0.2.0-M2"
+    val micrometer = "1.15.4"
+    val monocle = "3.3.0"
+    val pureconfig = "0.17.9"
+    val wasmtime = "0.19.0"
+    val weaver = "0.10.1"
+    val web3j = "4.13.0"
+  }
+
+  object Libraries {
+    // Helper functions
+    def circe(artifact: String): ModuleID = "io.circe" %% s"circe-$artifact" % V.circe
+    def ciris(artifact: String): ModuleID = "is.cir" %% artifact % V.ciris
+    def decline(artifact: String = ""): ModuleID =
+      "com.monovore" %% { if (artifact.isEmpty) "decline" else s"decline-$artifact" } % V.decline
+    def doobie(artifact: String): ModuleID =
+      ("org.tpolecat" %% s"doobie-$artifact" % V.doobie).exclude("org.slf4j", "slf4j-api")
+    def droste(artifact: String): ModuleID = "io.higherkindness" %% s"droste-$artifact" % V.droste
+    def fs2(artifact: String): ModuleID = "co.fs2" %% s"fs2-$artifact" % V.fs2
+    def fs2Data(artifact: String): ModuleID = "org.gnieh" %% s"fs2-data-$artifact" % V.fs2Data
+    def http4s(artifact: String): ModuleID = "org.http4s" %% s"http4s-$artifact" % V.http4s
+    def bouncyCastle(artifact: String): ModuleID = "org.bouncycastle" % artifact % V.bouncyCastle
+    def jawn(artifact: String): ModuleID = "org.typelevel" %% artifact % V.jawnVersion
+
+    // Core libraries
+    val cats = "org.typelevel" %% "cats-core" % V.cats
+    val catsEffect = "org.typelevel" %% "cats-effect" % V.catsEffect
+    val catsRetry = "com.github.cb372" %% "cats-retry" % V.catsRetry
+
+    // JSON
+    val circeCore = circe("core")
+    val circeGeneric = circe("generic")
+    val circeParser = circe("parser")
+
+    // HTTP
+    val http4sCore = http4s("core")
+    val http4sDsl = http4s("dsl")
+    val http4sServer = http4s("ember-server")
+    val http4sClient = http4s("ember-client")
+    val http4sCirce = http4s("circe")
+    val http4sJwtAuth = "dev.profunktor" %% "http4s-jwt-auth" % V.http4sJwtAuth
+
+    // Streaming
+    val fs2Core = fs2("core")
+    val fs2IO = fs2("io")
+    val fs2ReactiveStreams = fs2("reactive-streams")
+    val fs2DataCsv = fs2Data("csv")
+    val fs2DataCsvGeneric = fs2Data("csv-generic")
+
+    // Database
+    val doobieCore = doobie("core")
+    val doobieHikari = doobie("hikari")
+    val flyway = "org.flywaydb" % "flyway-core" % V.flyway
+    val apacheDerby = "org.apache.derby" % "derby" % V.apacheDerby
+
+    // Recursion schemes
+    val drosteCore = droste("core")
+
+    // Optics
+    val monocleCore = "dev.optics" %% "monocle-core" % V.monocle
+    val monocleMacro = "dev.optics" %% "monocle-macro" % V.monocle
+
+    // Configuration
+    val cirisCore = ciris("ciris")
+    val declineCore = decline()
+    val declineEffect = decline("effect")
+    val pureconfig = "com.github.pureconfig" %% "pureconfig-core" % V.pureconfig
+
+    // Refinement types
+    val iron = "io.github.iltotore" %% "iron" % V.iron
+    val ironCats = "io.github.iltotore" %% "iron-cats" % V.iron
+    val ironCirce = "io.github.iltotore" %% "iron-circe" % V.iron
+    val ironDecline = "io.github.iltotore" %% "iron-decline" % V.iron
+
+    // Type class derivation
+    val kittens = "org.typelevel" %% "kittens" % V.kittens
+    val izumi = "dev.zio" %% "izumi-reflect" % V.izumi
+
+    // Networking
+    val comcast = "com.comcast" %% "ip4s-core" % V.comcast
+
+    // Cryptography
+    val bc = bouncyCastle("bcprov-jdk18on")
+    val bcExtensions = bouncyCastle("bcpkix-jdk18on")
+    val bitcoinj = ("org.bitcoinj" % "bitcoinj-core" % V.bitcoinj)
+      .exclude("org.bouncycastle", "bcprov-jdk15to18")
+
+    // Numerical
+    val breeze = "org.scalanlp" %% "breeze" % V.breeze
+
+    // Blockchain/Web3
+    val web3j = "org.web3j" % "core" % V.web3j
+
+    // IPFS
+    val javaIpfsHttpClient = "com.github.ipfs" % "java-ipfs-http-client" % V.javaIpfsHttpClient
+
+    // WASM
+    val wasmtime = "io.github.kawamuray.wasmtime" % "wasmtime-java" % V.wasmtime
+
+    // JSON parsing
+    val jawnParser = jawn("jawn-parser")
+    val jawnAst = jawn("jawn-ast")
+    val jawnFs2 = "org.typelevel" %% "jawn-fs2" % V.jawnFs2Version
+
+    // Utilities
+    val betterFiles = "com.github.pathikrit" %% "better-files" % V.betterFiles
+    val mapref = "io.chrisdavenport" %% "mapref" % V.mapref
+    val micrometerPrometheusRegistry = "io.micrometer" % "micrometer-registry-prometheus" % V.micrometer
+
+    // Logging
+    val log4cats = "org.typelevel" %% "log4cats-slf4j" % V.log4cats
+    val logback = "ch.qos.logback" % "logback-classic" % V.logback
+    val logstashLogbackEncoder = "net.logstash.logback" % "logstash-logback-encoder" % V.logstashLogbackEncoder
+
+    // Testing
+    val weaverCats = "org.typelevel" %% "weaver-cats" % V.weaver
+    val weaverDiscipline = "org.typelevel" %% "weaver-discipline" % V.weaver
+    val weaverScalaCheck = "org.typelevel" %% "weaver-scalacheck" % V.weaver
+    val catsEffectTestkit = "org.typelevel" %% "cats-effect-testkit" % V.catsEffect
+  }
+}
+```
+
+#### 3. Configure build.sbt
+
+```scala
+import Dependencies._
+
+ThisBuild / organization := "com.example"
+ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / scalaVersion := V.scala
+
+ThisBuild / javacOptions ++= Seq("-source", "17", "-target", "17")
+
+ThisBuild / resolvers ++= Seq(
+  "jitpack".at("https://jitpack.io")
+)
+
+lazy val root = (project in file("."))
+  .settings(
+    name := "my-rapp",
+
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-feature",
+      "-unchecked",
+      "-language:implicitConversions",
+      "-language:higherKinds",
+      "-Xmax-inlines", "64",
+      "-source:future"
+    ),
+
+    Compile / mainClass := Some("com.example.Main"),
+
+    libraryDependencies ++= Seq(
+      // Core
+      Libraries.cats,
+      Libraries.catsEffect,
+      Libraries.catsRetry,
+
+      // JSON
+      Libraries.circeCore,
+      Libraries.circeGeneric,
+      Libraries.circeParser,
+
+      // HTTP
+      Libraries.http4sCore,
+      Libraries.http4sDsl,
+      Libraries.http4sServer,
+      Libraries.http4sClient,
+      Libraries.http4sCirce,
+      Libraries.http4sJwtAuth,
+
+      // Streaming
+      Libraries.fs2Core,
+      Libraries.fs2IO,
+      Libraries.fs2ReactiveStreams,
+      Libraries.fs2DataCsv,
+      Libraries.fs2DataCsvGeneric,
+
+      // Database
+      Libraries.doobieCore,
+      Libraries.doobieHikari,
+      Libraries.flyway,
+      Libraries.apacheDerby,
+
+      // Recursion schemes
+      Libraries.drosteCore,
+
+      // Optics
+      Libraries.monocleCore,
+      Libraries.monocleMacro,
+
+      // Configuration
+      Libraries.cirisCore,
+      Libraries.declineCore,
+      Libraries.declineEffect,
+      Libraries.pureconfig,
+
+      // Refinement types
+      Libraries.iron,
+      Libraries.ironCats,
+      Libraries.ironCirce,
+      Libraries.ironDecline,
+
+      // Type class derivation
+      Libraries.kittens,
+      Libraries.izumi,
+
+      // Networking
+      Libraries.comcast,
+
+      // Cryptography
+      Libraries.bc,
+      Libraries.bcExtensions,
+      Libraries.bitcoinj,
+
+      // Numerical
+      Libraries.breeze,
+
+      // Blockchain/Web3
+      Libraries.web3j,
+
+      // IPFS
+      Libraries.javaIpfsHttpClient,
+
+      // WASM
+      Libraries.wasmtime,
+
+      // JSON parsing
+      Libraries.jawnParser,
+      Libraries.jawnAst,
+      Libraries.jawnFs2,
+
+      // Utilities
+      Libraries.betterFiles,
+      Libraries.mapref,
+      Libraries.micrometerPrometheusRegistry,
+
+      // Logging
+      Libraries.log4cats,
+      Libraries.logback % Runtime,
+      Libraries.logstashLogbackEncoder % Runtime,
+
+      // Testing
+      Libraries.weaverCats % Test,
+      Libraries.catsEffectTestkit % Test
+    ),
+
+    testFrameworks += new TestFramework("weaver.framework.CatsEffect")
+  )
+```
+
+### IntelliJ IDEA Setup
+
+After copying the JARs to `lib/`, configure IntelliJ to use the sources:
+
+1. **Reload the SBT project** - Right-click `build.sbt` → Reload
+2. **Attach sources** (if not automatically detected):
+   - Open **Project Structure** (⌘;)
+   - Go to **Libraries** or **Modules → Dependencies**
+   - Find the `reality-combined` JAR entry
+   - Click **Edit** or the **+** button
+   - Under **Sources**, add the `-sources.jar` file from `lib/`
+   - Click **OK** and **Apply**
+
+**Note:** Due to Scala 3's `.tasty` files, ⌘+B may initially show decompiled interfaces. Navigate to the package in the Project panel to access actual source files.
 
 ### Minimal Example
 
