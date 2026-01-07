@@ -9,6 +9,7 @@ A comprehensive guide to building distributed applications with the Reality SDK 
 
 ### Part 2: Core Abstractions
 - [CoCell and TypedCoCell Documentation](#cocell-and-typedcocell-documentation)
+  - [Cats Effect Compatibility](#cats-effect-compatibility)
 
 ### Part 3: Safe Patterns and ZK-WASM
 - [Safe Hylo and ZK-WASM Execution Guide](#safe-hylo-and-zk-wasm-execution-guide)
@@ -487,6 +488,95 @@ The CoCell system provides two complementary abstractions for building blockchai
 | **TypedCoCell** | Compile-time (static) | New development, type-safe pipelines |
 
 Both share the same categorical structure and composition operators (`>>>`), but differ in when type compatibility is verified.
+
+---
+
+## Cats Effect Compatibility
+
+The product and coproduct types used throughout the SDK are fully compatible with Cats Effect. They're built on standard category theory constructs that Cats/Cats Effect natively supports.
+
+### Products (×)
+
+```scala
+import cats.syntax.all._
+import cats.effect.{Async, IO}
+
+// Tuples are products - Cats Effect works with them directly
+def processProduct[F[_]: Async](a: Int, b: String): F[(Int, String)] =
+  (computeA[F](a), computeB[F](b)).tupled  // Applicative.tupled
+
+// The &&& operator produces products
+val pipeline: TypedCoCell[Input, (OutputA, OutputB)] =
+  cellA &&& cellB  // Fan-out to product
+
+// mapN for combining products
+(cellA.run[IO](input), cellB.run[IO](input)).mapN { (resultA, resultB) =>
+  // combine results
+}
+```
+
+### Coproducts (+)
+
+```scala
+import cats.data.EitherT
+
+// Either is the canonical coproduct - full Cats Effect support
+def handleCoproduct[F[_]: Async](input: Either[ErrorA, ValueB]): F[Result] =
+  input.fold(
+    err => handleError[F](err),
+    value => processValue[F](value)
+  )
+
+// EitherT for effectful coproducts
+val computation: EitherT[IO, CellError, Result] =
+  EitherT(myCell.run[IO](input))
+
+// Chain operations with EitherT
+val pipeline: EitherT[IO, CellError, FinalResult] = for {
+  a <- EitherT(cellA.run[IO](input))
+  b <- EitherT(cellB.run[IO](a))
+  c <- EitherT(cellC.run[IO](b))
+} yield c
+```
+
+### Type Class Support
+
+| Construct | Scala Type | Cats Support |
+|-----------|------------|--------------|
+| Product (×) | `(A, B)`, `Tuple2` | `Applicative.product`, `tupled`, `mapN` |
+| Coproduct (+) | `Either[A, B]` | `MonadError`, `EitherT`, `Bifunctor` |
+| Exponential (→) | `A => F[B]` | `Kleisli`, `FunctionK` |
+| Identity | `A` | `Id`, `Applicative.pure` |
+
+### Kleisli Integration
+
+The `CoCellArrow` converts directly to Kleisli for integration with Cats Effect pipelines:
+
+```scala
+import cats.data.Kleisli
+
+val arrow: CoCellArrow[IO, Input, Output] = CoCellArrow("process", processInput)
+
+// Convert to Kleisli for composition with other Cats Effect code
+val kleisli: Kleisli[IO, Input, Either[CellError, Output]] = arrow.toKleisli
+
+// Compose Kleisli arrows
+val combined = kleisli.andThen(otherKleisli)
+```
+
+### Parallel Execution
+
+```scala
+import cats.syntax.parallel._
+
+// Run cells in parallel using Cats Effect
+val parallelResults: IO[(Either[CellError, A], Either[CellError, B])] =
+  (cellA.run[IO](inputA), cellB.run[IO](inputB)).parTupled
+
+// The *** operator leverages this internally
+val parallelPipeline: TypedCoCell[(In1, In2), (Out1, Out2)] =
+  cellA *** cellB  // Parallel product
+```
 
 ---
 
